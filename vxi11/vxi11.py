@@ -24,6 +24,8 @@ THE SOFTWARE.
 
 """
 
+from timeit import default_timer as time
+from functools import wraps
 from . import rpc
 import random
 import re
@@ -253,10 +255,11 @@ class Unpacker(rpc.Unpacker):
         pass
 
 class CoreClient(rpc.TCPClient):
-    def __init__(self, host):
+    def __init__(self, host, timeout=None):
         self.packer = Packer()
         self.unpacker = Unpacker('')
-        rpc.TCPClient.__init__(self, host, DEVICE_CORE_PROG, DEVICE_CORE_VERS)
+        rpc.TCPClient.__init__(self, host, DEVICE_CORE_PROG, DEVICE_CORE_VERS,
+                               timeout=timeout)
 
     def create_link(self, id, lock_device, lock_timeout, name):
         params = (id, lock_device, lock_timeout, name)
@@ -346,8 +349,34 @@ class CoreClient(rpc.TCPClient):
                 self.unpacker.unpack_device_error)
 
 class Instrument(object):
-    "VXI-11 instrument interface client"
-    def __init__(self, host, name = None, client_id = None, term_char = None):
+    """VXI-11 instrument interface client.
+
+    Args:
+        host (str):                       Host name of the intrument
+        instrument_timeout (int):         Timeout in ms for the instrument
+        connection_timeout (int or None): Timeout in ms for the socket
+        callback_timeout (int or None):   Timeout in ms to get callbacks
+                                          while waiting for a response.
+        callback (callable or None):      Called after every successful
+                                          operation or callback timeout.
+        name (str or None):               Name of the instrument
+        cliend_id (int or None):          ID fot the client
+        term_char (char or None):         A custom term character
+
+    If callback_timeout is None, no callback timeout will be raised.
+    If callback is None, nothing is called.
+    The callable should handle one argument. The exception is passed
+    if a callback timeout has been raised, None otherwise.
+    """
+
+    def __init__(self, host,
+                 instrument_timeout=10000,
+                 connection_timeout=None,
+                 callback_timeout=None,
+                 callback=None,
+                 name = None,
+                 client_id=None,
+                 term_char=None):
         "Create new VXI-11 instrument object"
 
         if host.upper().startswith('TCPIP') and '::' in host:
@@ -363,9 +392,19 @@ class Instrument(object):
         self.name = name
         self.client_id = client_id
         self.term_char = term_char
-        self.lock_timeout = 10000
-        self.timeout = 10000
-        self.client = CoreClient(host)
+        # Timeout
+        self.instrument_timeout = instrument_timeout
+        self.connection_timeout = connection_timeout
+        if callback_timeout:
+            self.callback_timeout = callback_timeout
+        else:
+            self.callback_timeout = instrument_timeout
+        self.timeout = self.callback_timeout
+        self.lock_timeout = self.callback_timeout
+        self.callback = callback
+        # Client
+        timeout_s = self.connection_timeout * 0.001
+        self.client = CoreClient(host, timeout_s)
         self.link = None
         self.max_recv_size = 0
 
@@ -378,7 +417,8 @@ class Instrument(object):
     def open(self):
         "Open connection to VXI-11 instrument"
         if self.client is None:
-            self.client = CoreClient(self.host)
+            timeout_s = self.connection_timeout * 0.001
+            self.client = CoreClient(self.host, timeout_s)
 
         error, link, abort_port, max_recv_size = self.client.create_link(self.client_id, 0, self.lock_timeout, self.name.encode("utf-8"))
 
@@ -390,11 +430,46 @@ class Instrument(object):
 
     def close(self):
         "Close connection"
-        self.client.destroy_link(self.link)
-        self.client.close()
+        if self.client is not None:
+            self.client.destroy_link(self.link)
+            self.client.close()
         self.link = None
         self.client = None
 
+    def handle_timeout(func):
+        """Decorator to handle instrument timeout."""
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            # Default behavior
+            no_control =  self.callback_timeout >= self.instrument_timeout
+            # Init time
+            start = time()
+            timeout_s = self.instrument_timeout * 0.001
+            # Loop over timeouts
+            while True:
+                try:
+                    # Run the function
+                    result = func(self, *args, **kwargs)
+                except Vxi11Exception as exc:
+                    # Time control
+                    no_timeout = exc.err != ERR_IO_TIMEOUT
+                    expired = (time()-start) > timeout_s
+                    # Reraise exception
+                    if no_control or no_timeout or expired:
+                        raise
+                    # Callback with exc
+                    if self.callback:
+                        self.callback(exc)
+                else:
+                    # Callback without exc
+                    if self.callback:
+                        self.callback(None)
+                    # Return
+                    return result
+        # Decorate
+        return wrapper
+
+    @handle_timeout
     def write_raw(self, data):
         "Write binary data to instrument"
         if self.link is None:
@@ -427,6 +502,7 @@ class Instrument(object):
             offset += size
             num -= size
 
+    @handle_timeout
     def read_raw(self, num=-1):
         "Read binary data from instrument"
         if self.link is None:

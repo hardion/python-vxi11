@@ -251,12 +251,13 @@ def recvrecord(sock):
 # Client using TCP to a specific port
 
 class RawTCPClient(Client):
-    def __init__(self, host, prog, vers, port):
+    def __init__(self, host, prog, vers, port, timeout=None):
         Client.__init__(self, host, prog, vers, port)
-        self.connect()
+        self.connect(timeout=timeout)
 
-    def connect(self):
+    def connect(self, timeout=None):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(timeout)
         self.sock.connect((self.host, self.port))
 
     def close(self):
@@ -480,8 +481,9 @@ class PartialPortMapperClient:
 
 class TCPPortMapperClient(PartialPortMapperClient, RawTCPClient):
 
-    def __init__(self, host):
-        RawTCPClient.__init__(self, host, PMAP_PROG, PMAP_VERS, PMAP_PORT)
+    def __init__(self, host, timeout=None):
+        RawTCPClient.__init__(self, host, PMAP_PROG, PMAP_VERS, PMAP_PORT,
+                              timeout=timeout)
         PartialPortMapperClient.__init__(self)
 
 
@@ -503,13 +505,13 @@ class BroadcastUDPPortMapperClient(PartialPortMapperClient, RawBroadcastUDPClien
 
 class TCPClient(RawTCPClient):
 
-    def __init__(self, host, prog, vers):
-        pmap = TCPPortMapperClient(host)
+    def __init__(self, host, prog, vers, timeout=None):
+        pmap = TCPPortMapperClient(host, timeout=timeout)
         port = pmap.get_port((prog, vers, IPPROTO_TCP, 0))
         pmap.close()
         if port == 0:
             raise RPCError('program not registered')
-        RawTCPClient.__init__(self, host, prog, vers, port)
+        RawTCPClient.__init__(self, host, prog, vers, port, timeout=timeout)
 
 
 class UDPClient(RawUDPClient):
