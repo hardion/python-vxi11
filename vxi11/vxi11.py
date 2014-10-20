@@ -352,6 +352,9 @@ class Instrument(object):
     """VXI-11 instrument interface client.
 
     Args:
+        name (str or None):               Name of the instrument
+        cliend_id (int or None):          ID fot the client
+        term_char (char or None):         A custom term character
         host (str):                       Host name of the intrument
         instrument_timeout (int):         Timeout in ms for the instrument
         connection_timeout (int or None): Timeout in ms for the socket
@@ -359,9 +362,6 @@ class Instrument(object):
                                           while waiting for a response.
         callback (callable or None):      Called after every successful
                                           operation or callback timeout.
-        name (str or None):               Name of the instrument
-        cliend_id (int or None):          ID fot the client
-        term_char (char or None):         A custom term character
 
     If callback_timeout is None, no callback timeout will be raised.
     If callback is None, nothing is called.
@@ -370,13 +370,13 @@ class Instrument(object):
     """
 
     def __init__(self, host,
+                 name = None,
+                 client_id=None,
+                 term_char=None,
                  instrument_timeout=10000,
                  connection_timeout=None,
                  callback_timeout=None,
-                 callback=None,
-                 name = None,
-                 client_id=None,
-                 term_char=None):
+                 callback=None):
         "Create new VXI-11 instrument object"
 
         if host.upper().startswith('TCPIP') and '::' in host:
@@ -392,6 +392,7 @@ class Instrument(object):
         self.name = name
         self.client_id = client_id
         self.term_char = term_char
+
         # Timeout
         self.instrument_timeout = instrument_timeout
         self.connection_timeout = connection_timeout
@@ -402,9 +403,14 @@ class Instrument(object):
         self.timeout = self.callback_timeout
         self.lock_timeout = self.callback_timeout
         self.callback = callback
+
         # Client
-        timeout_s = self.connection_timeout * 0.001
-        self.client = CoreClient(host, timeout_s)
+        if self.connection_timeout is None:
+            self.client = CoreClient(host)
+        else:
+            timeout_s = self.connection_timeout * 0.001
+            self.client = CoreClient(host, timeout_s)
+
         self.link = None
         self.max_recv_size = 0
 
@@ -416,9 +422,11 @@ class Instrument(object):
 
     def open(self):
         "Open connection to VXI-11 instrument"
-        if self.client is None:
+        if self.client is None and self.connection_timeout is None:
+            self.client = CoreClient(host)
+        elif self.client is None:
             timeout_s = self.connection_timeout * 0.001
-            self.client = CoreClient(self.host, timeout_s)
+            self.client = CoreClient(host, timeout_s)
 
         error, link, abort_port, max_recv_size = self.client.create_link(self.client_id, 0, self.lock_timeout, self.name.encode("utf-8"))
 
